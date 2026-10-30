@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Tailscale Manager
+Name[zh_CN]=Tailscale 管理器
+Comment=Tailscale desktop window and system tray
+Comment[zh_CN]=Tailscale 桌面窗口与常驻托盘
+Exec=/usr/bin/tailscale-manager
+Icon=tailscale-manager
+Terminal=false
+Categories=Network;
+Keywords=tailscale;vpn;mesh;network;
+StartupNotify=true
+StartupWMClass=tailscale-manager

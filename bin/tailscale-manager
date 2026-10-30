@@ -1,0 +1,10 @@
+#!/bin/bash
+# 桌面启动器：不打开浏览器，不启动 HTTP 服务。
+set -eu
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+APP_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+if [ ! -f "$APP_DIR/desktop.py" ]; then
+  APP_DIR="/usr/lib/tailscale-manager"
+fi
+export PYTHONDONTWRITEBYTECODE=1
+exec /usr/bin/python3 "$APP_DIR/desktop.py" "$@"
