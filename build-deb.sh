@@ -8,7 +8,7 @@ mkdir -p "$STAGE/DEBIAN" "$STAGE/usr/lib/tailscale-manager/icons" \
   "$STAGE/usr/bin" "$STAGE/usr/share/applications" \
   "$STAGE/usr/share/icons/hicolor/scalable/apps" "$STAGE/usr/share/doc/tailscale-manager"
 install -m644 "$REPO/packaging/control" "$STAGE/DEBIAN/control"
-for file in desktop.py desktop_settings.py server.py ui.html icon.svg; do
+for file in desktop.py desktop_files.py desktop_settings.py taildrop.py server.py ui.html icon.svg; do
   install -m644 "$REPO/$file" "$STAGE/usr/lib/tailscale-manager/$file"
 done
 install -m644 "$REPO"/icons/*.svg "$STAGE/usr/lib/tailscale-manager/icons/"
@@ -21,5 +21,7 @@ SIZE="$(du -sk "$STAGE/usr" | cut -f1)"
 printf 'Installed-Size: %s\n' "$SIZE" >> "$STAGE/DEBIAN/control"
 mkdir -p "$REPO/dist"
 find "$STAGE" -type d -exec chmod 755 {} +
-dpkg-deb --root-owner-group --build "$STAGE" "$REPO/dist/tailscale-manager_0.2.0_all.deb"
-printf '\n安装包：%s/dist/tailscale-manager_0.2.0_all.deb\n' "$REPO"
+APP_VERSION="$(awk '/^Version:/ {print $2}' "$REPO/packaging/control")"
+APP_PACKAGE="$REPO/dist/tailscale-manager_${APP_VERSION}_all.deb"
+dpkg-deb --root-owner-group --build "$STAGE" "$APP_PACKAGE"
+printf '\n安装包：%s\n' "$APP_PACKAGE"

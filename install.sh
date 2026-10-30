@@ -29,7 +29,7 @@ if app.resolve() == repo.resolve() and not app.is_symlink():
 if app.is_symlink():
     app.unlink()  # 迁移旧版指向源码的软链。
 app.mkdir(parents=True, exist_ok=True)
-for name in ("desktop.py", "desktop_settings.py", "server.py", "ui.html", "icon.svg"):
+for name in ("desktop.py", "desktop_files.py", "desktop_settings.py", "taildrop.py", "server.py", "ui.html", "icon.svg"):
     shutil.copy2(repo / name, app / name)
 for folder in ("icons", "bin"):
     shutil.copytree(repo / folder, app / folder, dirs_exist_ok=True)

@@ -15,7 +15,10 @@ if "--without-tray" in sys.argv:
 SCRIPT = Path(__file__).resolve()
 sys.path.insert(0, str(SCRIPT.parents[1]))
 import desktop
+import desktop_files
 from desktop import Gdk, GLib, Gtk
+from taildrop import LocalAPI, TaildropManager
+from taildrop_fixture import TaildropFixture
 
 desktop.APP_ID += ".Smoke"
 secondary = "--secondary" in sys.argv
@@ -34,6 +37,38 @@ opened = []
 errors = []
 original_clipboard = None
 clipboard_captured = False
+notifications = []
+file_fixture = None
+chooser_cancelled = False
+
+
+def file_manager(_binary, _directory, auto_receive, on_received):
+    check(file_fixture is not None, "secondary process attempted to start file service")
+    return TaildropManager(str(file_fixture.binary), receive_directory, auto_receive,
+                          on_received, LocalAPI(file_fixture.socket_path))
+
+
+desktop_files.TaildropManager = file_manager
+
+
+class FileChooser:
+    def set_select_multiple(self, _value):
+        pass
+
+    def set_current_folder(self, _value):
+        pass
+
+    def run(self):
+        return Gtk.ResponseType.CANCEL if chooser_cancelled else Gtk.ResponseType.ACCEPT
+
+    def get_filenames(self):
+        return [str(send_source)]
+
+    def get_filename(self):
+        return str(changed_directory)
+
+    def destroy(self):
+        pass
 
 
 def fake_action(path, body):
@@ -98,6 +133,7 @@ def page_checked(value):
     state = json.loads(value.to_string())
     check(state == {"bridge": True, "ip": "100.64.0.1", "status": "已连接"}, str(state))
     print("PASS: WebKit renders Chinese UI and receives state over the native bridge", flush=True)
+    app.window.resize(940, 1000)
     javascript("$('copyBtn').click()", lambda _value: later(copied))
 
 
@@ -151,11 +187,81 @@ def login_opened():
     app.autostart_item.set_active(False)
     fixture.update(backendState="Running", authURL="")
     app.receive_state(desktop.backend.build_state())
-    javascript("refresh(); undefined", lambda _v: later(finish, 2300))
+    javascript("refresh(); undefined", lambda _v: later(start_file_checks))
+
+
+def start_file_checks():
+    check((receive_directory / "收到的说明.txt").read_bytes() == b"received sample", "automatic receive failed")
+    check(notifications, "received file did not produce notification")
+    app.files.make_chooser = lambda *_args: FileChooser()
+    javascript("document.querySelector('[data-send]').click(); undefined", lambda _v: later(file_sent, 700))
+
+
+def file_sent():
+    check((file_fixture.delivered / send_source.name).read_bytes() == send_source.read_bytes(),
+          "file-picker selection did not reach send queue")
+    global chooser_cancelled
+    chooser_cancelled = True
+    count = len(app.files.manager.snapshot()["transfers"])
+    javascript("document.querySelector('[data-send]').click(); undefined",
+               lambda _v: later(lambda: chooser_cancel_checked(count)))
+
+
+def chooser_cancel_checked(count):
+    check(len(app.files.manager.snapshot()["transfers"]) == count, "cancelled picker started a transfer")
+    global chooser_cancelled
+    chooser_cancelled = False
+    javascript("$('selectReceiveDir').click(); undefined", lambda _v: later(directory_changed))
+
+
+def directory_changed():
+    check(app.files.manager.directory == changed_directory, "directory picker did not change destination")
+    javascript("$('autoReceive').click(); undefined", lambda _v: later(automatic_disabled))
+
+
+def automatic_disabled():
+    check(not app.files.manager.auto_receive, "automatic receive toggle was not saved")
+    file_fixture.files["手动收件.txt"] = b"manual bytes"
+    app.files.poll()
+    later(manual_receive)
+
+
+def manual_receive():
+    check(not (changed_directory / "手动收件.txt").exists(), "disabled auto-receive still saved a file")
+    javascript("$('receiveFiles').click(); undefined", lambda _v: later(manual_received, 700))
+
+
+def manual_received():
+    check((changed_directory / "手动收件.txt").read_bytes() == b"manual bytes", "manual receive failed")
+    print("PASS: file picker, successful send, cancelled picker, directory setting, auto/manual receive, notification", flush=True)
+    global send_source
+    send_source = Path(temporary) / "slow-cancel.txt"
+    send_source.write_bytes(b"cancel me")
+    javascript("document.querySelector('[data-send]').click(); undefined", lambda _v: later(cancel_send, 600))
+
+
+def cancel_send():
+    check(any(item["status"] == "sending" for item in app.files.manager.snapshot()["transfers"]),
+          "slow transfer did not start")
+    javascript("refreshFiles().then(() => document.querySelector('[data-cancel-file]').click()); undefined",
+               lambda _v: later(cancel_checked, 800))
+
+
+def cancel_checked():
+    check(any(item["name"] == "slow-cancel.txt" and item["status"] == "cancelled"
+              for item in app.files.manager.snapshot()["transfers"]), "UI cancel did not stop transfer")
+    check(not (file_fixture.delivered / "slow-cancel.txt").exists(), "cancelled transfer was delivered")
+    print("PASS: in-flight transfer cancellation from window", flush=True)
+    app.files.set_auto_receive(True)
+    javascript("refreshFiles(); undefined", lambda _v: later(finish, 2300))
 
 
 def finish():
     check(not list(Path.cwd().iterdir()), "WebKit wrote runtime files to the working directory")
+    javascript("$('receivePath').textContent='~/Downloads/Tailscale'", lambda _v: later(finish_capture, 150))
+
+
+def finish_capture():
     screenshot()
     print("PASS: external login, autostart setting, and window capture", flush=True)
     app.quit()
@@ -174,7 +280,15 @@ with tempfile.TemporaryDirectory(prefix="tailscale-desktop-smoke-") as temporary
         working = Path(temporary) / "working"
         working.mkdir()
         os.chdir(working)
+        file_fixture = TaildropFixture(Path(temporary))
+        file_fixture.files["收到的说明.txt"] = b"received sample"
+        receive_directory = Path(temporary) / "received"
+        changed_directory = Path(temporary) / "选择的接收文件夹"
+        changed_directory.mkdir()
+        send_source = Path(temporary) / "发送示例.txt"
+        send_source.write_bytes(b"outgoing sample")
     app = desktop.TailscaleApplication()
+    app.send_notification = lambda identifier, notice: notifications.append((identifier, notice))
     if os.environ.get("TS_MANAGER_SMOKE_DEBUG"):
         def trace_window(_app, window):
             for event in ("show", "hide", "delete-event"):
@@ -184,9 +298,11 @@ with tempfile.TemporaryDirectory(prefix="tailscale-desktop-smoke-") as temporary
     if not secondary:
         def started(_app):
             later(no_tray if without_tray else page_ready, 5500 if without_tray else 2200)
-            later(lambda: (_ for _ in ()).throw(AssertionError("smoke test timed out")), 25000)
+            later(lambda: (_ for _ in ()).throw(AssertionError("smoke test timed out")), 40000)
         app.connect("startup", started)
     result = app.run([sys.argv[0]] + (["--background"] if without_tray else []))
+    if file_fixture:
+        file_fixture.close()
     if clipboard_captured:
         clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
         if original_clipboard is not None:

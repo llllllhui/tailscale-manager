@@ -108,6 +108,29 @@
   #toast.show{opacity:1;transform:translate(-50%,0)}
   .desktop-note{display:none;color:var(--muted);font-size:12px;text-align:center;margin:22px 0 0}
   .desktop .desktop-note{display:block}
+  .desktop-only{display:none}
+  .desktop .desktop-only{display:block}
+  .file-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .check{display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-size:13px;margin-right:auto}
+  input[type=checkbox]{accent-color:var(--blue);width:16px;height:16px}
+  .receive-path{display:flex;align-items:center;gap:9px;margin-top:13px;color:var(--muted);font-size:12px}
+  .receive-path span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .file-note{margin:12px 0 0;font-size:12px;color:var(--muted);line-height:1.6;overflow-wrap:anywhere}
+  .file-note.error{color:var(--red)}
+  .transfer-list{max-height:160px;overflow-y:auto;margin-top:14px;border-top:1px solid var(--line)}
+  .transfer{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
+  .transfer:last-child{border-bottom:0}
+  .file-icon{display:grid;place-items:center;width:30px;height:36px;border:1px solid var(--line);
+    border-radius:6px;background:var(--soft);color:var(--muted);font-size:18px;flex:none}
+  .transfer-info{min-width:0;flex:1}.transfer-name{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .transfer-meta{font-size:11.5px;color:var(--muted);margin-top:3px;overflow-wrap:anywhere}
+  .transfer-state{font-size:12px;color:var(--muted);white-space:nowrap}
+  .transfer-state.done{color:var(--green)}.transfer-state.failed{color:var(--red)}
+  .transfer-state.sending::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:var(--blue);margin-right:6px;animation:pulse 1.3s ease-in-out infinite}
+  .peer-actions{display:flex;gap:6px;justify-content:flex-end;white-space:nowrap}
+  @keyframes pulse{50%{opacity:.25}}
+  @media(prefers-reduced-motion:reduce){.transfer-state.sending::before{animation:none}}
   @media(prefers-color-scheme:dark){
     :root{--bg:#1B1D21;--card:#25282D;--line:#393D45;--text:#ECEFF4;--muted:#A4AEBD;
       --blue:#78A7FF;--blue-dark:#548CEF;--blue-soft:#293954;--green:#5CD6A4;
@@ -170,6 +193,20 @@
     </div>
   </div></div>
 
+  <div class="card desktop-only" id="filesCard"><div class="inner">
+    <div class="cardhead">
+      <h2>文件收发</h2><span class="hint" id="fileStatus">正在读取…</span>
+    </div>
+    <div class="file-controls">
+      <label class="check"><input type="checkbox" id="autoReceive" checked>自动接收文件</label>
+      <button class="btn tiny" id="receiveFiles">立即收取</button>
+      <button class="btn tiny" id="openReceiveDir">打开接收文件夹</button>
+    </div>
+    <div class="receive-path"><span id="receivePath">接收文件夹</span><button class="btn tiny" id="selectReceiveDir">更改</button></div>
+    <p class="file-note" id="fileNote">在设备列表点击「发送文件」，即可选择一个或多个文件。</p>
+    <div class="transfer-list" id="transfers" aria-live="polite"></div>
+  </div></div>
+
   <div class="card"><div class="inner">
     <div class="cardhead">
       <h2>设备 <span class="hint" id="peerCount"></span></h2>
@@ -199,6 +236,10 @@ let busy = false;
 const lat = {};          // ip -> 延迟文本
 let lastOK = 0;
 let actionError = '';
+let fileState = null;
+let choosingFiles = false;
+let fileControlBusy = false;
+let fileError = '';
 const isDesktop = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.desktop);
 document.documentElement.classList.toggle('desktop', isDesktop);
 const pending = new Map();
@@ -240,7 +281,8 @@ async function api(path, body){
   if(isDesktop){
     return new Promise((resolve, reject) => {
       const id = ++requestID;
-      const timer = setTimeout(() => {
+      const interactive = ['/desktop/files/send','/desktop/files/directory'].includes(path);
+      const timer = interactive ? null : setTimeout(() => {
         pending.delete(id);
         reject(new Error('操作超时，请稍后重试'));
       }, 45000);
@@ -343,7 +385,8 @@ function render(){
         <td><span class="tag grey">${esc(osLabel(p.os))}</span></td>
         <td>${conn}</td>
         <td><span class="lat" id="lat-${esc(p.ip)}">${esc(lat[p.ip] || '—')}</span></td>
-        <td style="text-align:right"><button class="btn tiny" data-ping="${esc(p.ip)}" ${busy || !p.online || !running ? 'disabled' : ''}>测延迟</button></td>
+        <td><div class="peer-actions"><button class="btn tiny" data-ping="${esc(p.ip)}" ${busy || !p.online || !running ? 'disabled' : ''}>测延迟</button>
+          ${isDesktop ? `<button class="btn tiny" data-send="${esc(p.ip)}" title="仅支持已上线且可接收 Taildrop 的个人设备" ${busy || choosingFiles || !running || !fileState?.targets.some(t => t.ip === p.ip && t.online) ? 'disabled' : ''}>发送文件</button>` : ''}</div></td>
       </tr>`;
     }).join('');
   }
@@ -358,6 +401,75 @@ function render(){
   $('footLeft').textContent = '已更新 ' + new Date().toLocaleTimeString('zh-CN', {hour12:false});
   $('footRight').textContent = 'tailscaled ' + (s.version || '');
 }
+
+function fileSize(bytes){
+  if(bytes < 1024) return bytes + ' B';
+  if(bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  if(bytes < 1024*1024*1024) return (bytes/1024/1024).toFixed(1) + ' MB';
+  return (bytes/1024/1024/1024).toFixed(1) + ' GB';
+}
+
+function renderFiles(){
+  if(!fileState) return;
+  const f = fileState;
+  if(!fileControlBusy) $('autoReceive').checked = f.autoReceive;
+  $('autoReceive').disabled = fileControlBusy;
+  $('receiveFiles').disabled = fileControlBusy || f.receiving;
+  $('selectReceiveDir').disabled = fileControlBusy;
+  $('receivePath').textContent = f.directory;
+  $('receivePath').title = f.directory;
+  $('fileStatus').textContent = f.receiving ? '正在接收…' : f.pending.length ? `${f.pending.length} 个待收文件` : 'Taildrop · 个人设备';
+  const error = fileError || f.error;
+  $('fileNote').className = 'file-note' + (error ? ' error' : '');
+  $('fileNote').textContent = error || (f.targets.length
+    ? '点击设备旁的「发送文件」。同名收件自动加编号，收发记录保留至本次退出。'
+    : '尚无可发送设备。请在 Tailscale 控制台启用 Send Files，并确认接收设备属于同一账号。');
+  const labels = {queued:'排队中',sending:'发送中',done:'已完成',failed:'失败',cancelled:'已取消'};
+  const markup = f.transfers.map(t => `<div class="transfer">
+    <span class="file-icon" aria-hidden="true">${t.direction === 'send' ? '↑' : '↓'}</span>
+    <div class="transfer-info"><div class="transfer-name" title="${esc(t.name)}">${esc(t.name)}</div>
+    <div class="transfer-meta">${t.direction === 'send' ? '发送到 ' + esc(t.peer) : '已接收'} · ${fileSize(t.size)}${t.error ? ' · ' + esc(t.error) : ''}</div></div>
+    <span class="transfer-state ${esc(t.status)}">${labels[t.status] || esc(t.status)}</span>
+    ${['queued','sending'].includes(t.status) ? `<button class="btn tiny" data-cancel-file="${esc(t.id)}">取消</button>` : ''}
+    </div>`).join('');
+  if($('transfers')._markup !== markup){$('transfers').innerHTML = markup; $('transfers')._markup = markup;}
+  $('transfers').style.display = f.transfers.length ? 'block' : 'none';
+}
+
+async function refreshFiles(){
+  if(!isDesktop) return;
+  try{fileState = await api('/desktop/files/state'); renderFiles(); render();}
+  catch(e){$('fileNote').textContent = e.message;}
+}
+
+async function fileAction(path, body = {}){
+  if(fileControlBusy) return;
+  fileControlBusy = true; fileError = ''; renderFiles();
+  try{
+    const result = await api(path, body);
+    if(!result.ok) throw new Error(result.error || '文件操作失败');
+    if(result.message && !result.cancelled) toast(result.message);
+  }catch(e){fileError = e.message;}
+  finally{fileControlBusy = false; await refreshFiles();}
+}
+
+$('autoReceive').onchange = e => fileAction('/desktop/files/auto', {enabled:e.target.checked});
+$('receiveFiles').onclick = () => fileAction('/desktop/files/receive');
+$('openReceiveDir').onclick = () => fileAction('/desktop/files/open');
+$('selectReceiveDir').onclick = () => fileAction('/desktop/files/directory');
+document.addEventListener('click', async e => {
+  const send = e.target.closest('[data-send]');
+  const cancel = e.target.closest('[data-cancel-file]');
+  if(send && !choosingFiles){
+    choosingFiles = true; render();
+    try{
+      const result = await api('/desktop/files/send', {ip:send.dataset.send});
+      if(!result.ok) throw new Error(result.error || '发送失败');
+      if(result.message && !result.cancelled) toast(result.message);
+    }catch(error){fileError = error.message;}
+    finally{choosingFiles = false; await refreshFiles();}
+  }else if(cancel){await fileAction('/desktop/files/cancel', {id:cancel.dataset.cancelFile});}
+});
 
 // 事件绑定
 $('copyBtn').onclick = async () => {
@@ -426,6 +538,8 @@ document.addEventListener('click', async (e) => {
 
 refresh();
 setInterval(refresh, 2500);
+refreshFiles();
+setInterval(refreshFiles, 2000);
 
 // 首屏用注入的状态立即渲染
 try{

@@ -27,6 +27,7 @@ except (ImportError, ValueError) as exc:
     raise SystemExit(1)
 
 import desktop_settings as settings
+from desktop_files import DesktopFiles
 import server as backend
 
 APP_DIR = Path(__file__).resolve().parent
@@ -65,6 +66,8 @@ class TailscaleApplication(Gtk.Application):
         self.ip_item = self.add_menu_item(self.menu, "复制本机 IP", self.copy_ip)
         self.toggle_item = self.add_menu_item(self.menu, "连接", self.toggle_connection)
         self.exit_item = self.add_menu_item(self.menu, "出口节点")
+        self.menu.append(Gtk.SeparatorMenuItem())
+        self.files = DesktopFiles(self, self.menu, backend.TAILSCALE)
         self.menu.append(Gtk.SeparatorMenuItem())
         self.add_menu_item(self.menu, "打开 Tailscale Manager", self.show_window)
         self.autostart_item = Gtk.CheckMenuItem.new_with_label("登录后自动启动")
@@ -273,6 +276,8 @@ class TailscaleApplication(Gtk.Application):
                 callback(self.state)
             elif path == "/desktop/copy":
                 callback(self.copy_ip())
+            elif isinstance(path, str) and path.startswith("/desktop/files/"):
+                self.files.handle(path, request.get("body") or {}, callback)
             elif path == "/desktop/open":
                 body = request.get("body") or {}
                 uri = body.get("url", "") if isinstance(body, dict) else ""
@@ -359,6 +364,7 @@ class TailscaleApplication(Gtk.Application):
         GLib.source_remove(self.poll_source)
         # 定时器可能已运行完毕；不再尝试移除 tray_source。
         self.indicator.set_status(AppIndicator.IndicatorStatus.PASSIVE)
+        self.files.close()
         self.executor.shutdown(wait=False, cancel_futures=True)
         Gtk.Application.do_shutdown(self)
 

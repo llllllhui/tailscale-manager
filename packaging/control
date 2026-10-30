@@ -1,5 +1,5 @@
 Package: tailscale-manager
-Version: 0.2.0
+Version: 0.3.0
 Section: net
 Priority: optional
 Architecture: all
@@ -8,5 +8,5 @@ Depends: python3 (>= 3.9), python3-gi, gir1.2-gtk-3.0, gir1.2-webkit2-4.1, gir1.
 Recommends: gnome-shell-extension-appindicator
 Description: Desktop window and system tray for Tailscale on Linux
  A GTK application with a Chinese-language management window, persistent
- system tray, exit-node selection and optional login autostart.
+ system tray, Taildrop file transfers, exit-node selection and login autostart.
  Requires a separately installed and running Tailscale daemon.
